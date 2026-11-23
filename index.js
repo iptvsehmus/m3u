@@ -4,14 +4,9 @@ const PORT = process.env.PORT || 3000;
 
 const CATALOG_URL = 'https://nuvio-kool-ws.vercel.app/catalog/tv/kool_live_tv/genre=Turkey.json';
 
-// Doğrudan ana adresten (/) ve /tr.m3u üzerinden Türkiye M3U listesi üretir
 app.get(['/', '/tr.m3u'], async (req, res) => {
   try {
     const response = await fetch(CATALOG_URL);
-    if (!response.ok) {
-      throw new Error(`Katalog HTTP ${response.status}`);
-    }
-
     const data = await response.json();
     const metas = data.metas || [];
 
@@ -19,7 +14,6 @@ app.get(['/', '/tr.m3u'], async (req, res) => {
     let m3u = '#EXTM3U\n';
 
     for (const ch of metas) {
-      // ID formatı: "kool:live:2325261206" -> sadece sayısal ID'yi al
       const rawId = ch.id.split(':').pop();
       const name = (ch.name || 'Kanal').replace(/,/g, ' ');
       const logo = ch.poster || '';
@@ -35,10 +29,34 @@ app.get(['/', '/tr.m3u'], async (req, res) => {
   }
 });
 
-// Kanal tıklandığında yayın akışına yönlendirir
+// Yayın linkini çözer ve yönlendirir
 app.get('/play/:id.m3u8', async (req, res) => {
   const id = req.params.id;
-  res.redirect(302, `https://kool.to/play/${id}/index.m3u8`);
+
+  try {
+    // 1. Önce nuvio-kool-ws stream endpoint'ini tireli formatla (kool-live:) dene
+    const nuvioRes = await fetch(`https://nuvio-kool-ws.vercel.app/stream/tv/kool-live:${id}.json`);
+    if (nuvioRes.ok) {
+      const nuvioData = await nuvioRes.json();
+      if (nuvioData.streams && nuvioData.streams.length > 0 && nuvioData.streams[0].url) {
+        return res.redirect(302, nuvioData.streams[0].url);
+      }
+    }
+
+    // 2. Olmazsa Vavoo/Kool.to play adresini VAVOO User-Agent ile takip edip gerçek URL'yi al
+    const vavooRes = await fetch(`https://vavoo.to/play/${id}/index.m3u8`, {
+      headers: { 'User-Agent': 'VAVOO/2.6' },
+      redirect: 'follow'
+    });
+
+    if (vavooRes.ok && vavooRes.url) {
+      return res.redirect(302, vavooRes.url);
+    }
+
+    res.status(502).send('Yayin kaynagi bulunamadi');
+  } catch (err) {
+    res.status(500).send('Yayin hatasi: ' + err.message);
+  }
 });
 
 app.listen(PORT, () => console.log(`Sunucu ${PORT} portunda calisiyor`));

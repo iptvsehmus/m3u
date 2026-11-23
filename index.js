@@ -4,26 +4,6 @@ const PORT = process.env.PORT || 3000;
 
 const CATALOG_URL = 'https://nuvio-kool-ws.vercel.app/catalog/tv/kool_live_tv/genre=Turkey.json';
 
-// Vavoo / Kool.to yayınları için geçici imza (auth) üretir
-async function getVavooAuth() {
-  const res = await fetch('https://www.vavoo.tv/api/box/ping2', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'User-Agent': 'VAVOO/2.6'
-    },
-    body: JSON.stringify({
-      vec: '1.0',
-      pkg: 'tv.vavoo.app',
-      v: '2.6',
-      id: '0000000000000000'
-    })
-  });
-  const data = await res.json();
-  return data?.response?.signed || data?.signed || '';
-}
-
-// Türkiye M3U listesi
 app.get(['/', '/tr.m3u'], async (req, res) => {
   try {
     const response = await fetch(CATALOG_URL);
@@ -39,7 +19,6 @@ app.get(['/', '/tr.m3u'], async (req, res) => {
       const logo = ch.poster || '';
 
       m3u += `#EXTINF:-1 tvg-id="${rawId}" tvg-name="${name}" tvg-logo="${logo}" group-title="Turkiye",${name}\n`;
-      m3u += `#EXTVLCOPT:http-user-agent=VAVOO/2.6\n`;
       m3u += `${host}/play/${rawId}.m3u8\n`;
     }
 
@@ -50,18 +29,50 @@ app.get(['/', '/tr.m3u'], async (req, res) => {
   }
 });
 
-// İmzalı yayın akışına yönlendirir
+// Yönlendirme yerine yayını Vercel üzerinden proxy yaparak aktarır (TR engelini aşar)
 app.get('/play/:id.m3u8', async (req, res) => {
   const id = req.params.id;
   try {
-    const sig = await getVavooAuth();
+    const authRes = await fetch('https://www.vavoo.tv/api/box/ping2', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'User-Agent': 'VAVOO/2.6'
+      },
+      body: JSON.stringify({
+        vec: '1.0',
+        pkg: 'tv.vavoo.app',
+        v: '2.6',
+        id: '0000000000000000'
+      })
+    });
+    const authData = await authRes.json();
+    const sig = authData?.response?.signed || authData?.signed || '';
+
     const targetUrl = sig
       ? `https://vavoo.to/play/${id}/index.m3u8?n=${encodeURIComponent(sig)}`
       : `https://vavoo.to/play/${id}/index.m3u8`;
 
-    res.redirect(302, targetUrl);
+    const streamRes = await fetch(targetUrl, {
+      headers: { 'User-Agent': 'VAVOO/2.6' }
+    });
+
+    if (!streamRes.ok) {
+      return res.status(streamRes.status).send('Kaynak akis hatasi: ' + streamRes.status);
+    }
+
+    let m3u8Text = await streamRes.text();
+    const baseUrl = streamRes.url.substring(0, streamRes.url.lastIndexOf('/') + 1);
+
+    // Göreli segment (.ts) yollarını tam adreslere çevir
+    m3u8Text = m3u8Text.replace(/^(?!#)(?!http)(.+)$/gm, (line) => {
+      return baseUrl + line.trim();
+    });
+
+    res.setHeader('Content-Type', 'application/vnd.apple.mpegurl');
+    res.send(m3u8Text);
   } catch (err) {
-    res.status(500).send('Yayin hatasi: ' + err.message);
+    res.status(500).send('Proxy hatasi: ' + err.message);
   }
 });
 
